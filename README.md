@@ -60,12 +60,14 @@ NLAD transforms this experience by allowing developers to:
 
 ## Implementation Platform
 
-NLAD is best implemented using Claude Projects or similar LLM platforms that support:
+NLAD is best implemented using [Claude Projects](https://claude.ai/projects) or similar LLM platforms that support:
 
 - Document attachment capability
 - Conversation context maintenance
 - Rich markdown formatting
 - Code syntax highlighting
+
+<img src="images/claude_projects_screenshot.png" alt="Screenshot of Claude Projects" width="600" />
 
 ## Required Documentation
 
