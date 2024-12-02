@@ -237,8 +237,8 @@ This documentation is licensed under the MIT License - see the [LICENSE](LICENSE
 
 ## Community
 
-- [GitHub Discussions](https://github.com/yourusername/nlad/discussions) - For methodology discussions and questions
-- [GitHub Issues](https://github.com/yourusername/nlad/issues) - For documentation improvements and suggestions
+- [GitHub Discussions](https://github.com/Matt-Dionis/nlad/discussions) - For methodology discussions and questions
+- [GitHub Issues](https://github.com/Matt-Dionis/nlad/issues) - For documentation improvements and suggestions
 
 ---
 
