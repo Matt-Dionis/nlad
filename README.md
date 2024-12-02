@@ -27,7 +27,7 @@ NLAD transforms this experience by allowing developers to:
 - **Express High-Level Intent**: Describe features and functionality in natural language
 - **Automate Technical Details**: Let LLMs handle routine implementation tasks
 - **Focus on User Experience**: Spend more time on what matters to users
-- **Iterate Rapidly**: Quick prototype and refine applications
+- **Iterate Rapidly**: Quickly prototype and refine applications
 - **Design Integration**: Specify design choices through natural language and visual references
 - **Future-Proof Development**: As LLM capabilities grow, the level of abstraction can increase
 
@@ -185,7 +185,6 @@ code snippets, and explanations while the Developer maintains control over imple
    - Integration with existing development workflows
 
 4. **Testing and Validation**
-   - Interactive testing through natural language
    - Guidance on test coverage and validation
    - Best practices for quality assurance
 
