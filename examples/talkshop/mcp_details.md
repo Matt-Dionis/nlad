@@ -839,6 +839,774 @@ tail -n 20 -f ~/Library/Logs/Claude/mcp*.log
 npx tsc --noEmit
 ```
 
+# Python MCP Server
+
+Create a simple MCP server in Python in 15 minutes
+
+Let’s build your first MCP server in Python! We’ll create a weather server that provides current weather data as a resource and lets Claude fetch forecasts using tools.
+
+_This guide uses the OpenWeatherMap API. You’ll need a free API key from OpenWeatherMap to follow along._
+
+## Prerequisites
+
+_The following steps are for macOS. Guides for other platforms are coming soon._
+
+1. Install Python
+
+You’ll need Python 3.10 or higher:
+
+```bash
+python --version  # Should be 3.10 or higher
+```
+
+2. Install uv via homebrew
+
+See https://docs.astral.sh/uv/ for more information.
+
+```bash
+brew install uv
+uv --version # Should be 0.4.18 or higher
+```
+
+3. Create a new project using the MCP project creator
+
+```bash
+uvx create-mcp-server --path weather_service
+cd weather_service
+```
+
+4. Install additional dependencies
+
+```bash
+uv add httpx python-dotenv
+```
+
+5. Set up environment
+
+Create `.env`:
+
+```bash
+OPENWEATHER_API_KEY=your-api-key-here
+```
+
+## Create your server
+
+1. Add the base imports and setup
+
+In `weather_service/src/weather_service/server.py`
+
+```python
+import os
+import json
+import logging
+from datetime import datetime, timedelta
+from collections.abc import Sequence
+from functools import lru_cache
+from typing import Any
+
+import httpx
+import asyncio
+from dotenv import load_dotenv
+from mcp.server import Server
+from mcp.types import (
+    Resource,
+    Tool,
+    TextContent,
+    ImageContent,
+    EmbeddedResource,
+    LoggingLevel
+)
+from pydantic import AnyUrl
+
+# Load environment variables
+load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("weather-server")
+
+# API configuration
+API_KEY = os.getenv("OPENWEATHER_API_KEY")
+if not API_KEY:
+    raise ValueError("OPENWEATHER_API_KEY environment variable required")
+
+API_BASE_URL = "http://api.openweathermap.org/data/2.5"
+DEFAULT_CITY = "London"
+CURRENT_WEATHER_ENDPOINT = "weather"
+FORECAST_ENDPOINT = "forecast"
+
+# The rest of our server implementation will go here
+```
+
+2. Add weather fetching functionality
+
+Add this functionality:
+
+```python
+# Create reusable params
+http_params = {
+    "appid": API_KEY,
+    "units": "metric"
+}
+
+async def fetch_weather(city: str) -> dict[str, Any]:
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{API_BASE_URL}/weather",
+            params={"q": city, **http_params}
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    return {
+        "temperature": data["main"]["temp"],
+        "conditions": data["weather"][0]["description"],
+        "humidity": data["main"]["humidity"],
+        "wind_speed": data["wind"]["speed"],
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+app = Server("weather-server")
+```
+
+3. Implement resource handlers
+
+Add these resource-related handlers to our main function:
+
+```python
+app = Server("weather-server")
+
+@app.list_resources()
+async def list_resources() -> list[Resource]:
+    """List available weather resources."""
+    uri = AnyUrl(f"weather://{DEFAULT_CITY}/current")
+    return [
+        Resource(
+            uri=uri,
+            name=f"Current weather in {DEFAULT_CITY}",
+            mimeType="application/json",
+            description="Real-time weather data"
+        )
+    ]
+
+@app.read_resource()
+async def read_resource(uri: AnyUrl) -> str:
+    """Read current weather data for a city."""
+    city = DEFAULT_CITY
+    if str(uri).startswith("weather://") and str(uri).endswith("/current"):
+        city = str(uri).split("/")[-2]
+    else:
+        raise ValueError(f"Unknown resource: {uri}")
+
+    try:
+        weather_data = await fetch_weather(city)
+        return json.dumps(weather_data, indent=2)
+    except httpx.HTTPError as e:
+        raise RuntimeError(f"Weather API error: {str(e)}")
+```
+
+4. Implement tool handlers
+
+Add these tool-related handlers:
+
+```python
+app = Server("weather-server")
+
+# Resource implementation ...
+
+@app.list_tools()
+async def list_tools() -> list[Tool]:
+    """List available weather tools."""
+    return [
+        Tool(
+            name="get_forecast",
+            description="Get weather forecast for a city",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "city": {
+                        "type": "string",
+                        "description": "City name"
+                    },
+                    "days": {
+                        "type": "number",
+                        "description": "Number of days (1-5)",
+                        "minimum": 1,
+                        "maximum": 5
+                    }
+                },
+                "required": ["city"]
+            }
+        )
+    ]
+
+@app.call_tool()
+async def call_tool(name: str, arguments: Any) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
+    """Handle tool calls for weather forecasts."""
+    if name != "get_forecast":
+        raise ValueError(f"Unknown tool: {name}")
+
+    if not isinstance(arguments, dict) or "city" not in arguments:
+        raise ValueError("Invalid forecast arguments")
+
+    city = arguments["city"]
+    days = min(int(arguments.get("days", 3)), 5)
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{API_BASE_URL}/{FORECAST_ENDPOINT}",
+                params={
+                    "q": city,
+                    "cnt": days * 8,  # API returns 3-hour intervals
+                    **http_params,
+                }
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        forecasts = []
+        for i in range(0, len(data["list"]), 8):
+            day_data = data["list"][i]
+            forecasts.append({
+                "date": day_data["dt_txt"].split()[0],
+                "temperature": day_data["main"]["temp"],
+                "conditions": day_data["weather"][0]["description"]
+            })
+
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(forecasts, indent=2)
+            )
+        ]
+    except httpx.HTTPError as e:
+        logger.error(f"Weather API error: {str(e)}")
+        raise RuntimeError(f"Weather API error: {str(e)}")
+```
+
+5. Add the main function
+
+Add this to the end of `weather_service/src/weather_service/server.py`:
+
+```python
+async def main():
+    # Import here to avoid issues with event loops
+    from mcp.server.stdio import stdio_server
+
+    async with stdio_server() as (read_stream, write_stream):
+        await app.run(
+            read_stream,
+            write_stream,
+            app.create_initialization_options()
+        )
+```
+
+6. Check your entry point in **init**.py
+
+Add this to the end of `weather_service/src/weather_service/__init__.py`:
+
+```python
+from . import server
+import asyncio
+
+def main():
+   """Main entry point for the package."""
+   asyncio.run(server.main())
+
+# Optionally expose other important items at package level
+__all__ = ['main', 'server']
+```
+
+## Connect to Claude Desktop
+
+1. Update Claude config
+
+Add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "weather": {
+      "command": "uv",
+      "args": ["--directory", "path/to/your/project", "run", "weather-service"],
+      "env": {
+        "OPENWEATHER_API_KEY": "your-api-key"
+      }
+    }
+  }
+}
+```
+
+2. Restart Claude
+
+   1. Quit Claude completely
+   2. Start Claude again
+   3. Look for your weather server in the 🔌 menu
+
+## Try it out!
+
+### Check Current Weather
+
+"What's the current weather in San Francisco? Can you analyze the conditions and tell me if it's a good day for outdoor activities?"
+
+### Get a Forecast
+
+"Can you get me a 5-day forecast for Tokyo and help me plan what clothes to pack for my trip?"
+
+### Compare Weather
+
+"Can you analyze the forecast for both Tokyo and San Francisco and tell me which city would be better for outdoor photography this week?"
+
+## Understanding the code
+
+### Type Hints
+
+```python
+async def read_resource(self, uri: str) -> ReadResourceResult:
+    # ...
+```
+
+### Resources
+
+```python
+@app.list_resources()
+async def list_resources(self) -> ListResourcesResult:
+    return ListResourcesResult(
+        resources=[
+            Resource(
+                uri=f"weather://{DEFAULT_CITY}/current",
+                name=f"Current weather in {DEFAULT_CITY}",
+                mimeType="application/json",
+                description="Real-time weather data"
+            )
+        ]
+    )
+```
+
+### Tools
+
+```python
+Tool(
+    name="get_forecast",
+    description="Get weather forecast for a city",
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "city": {
+                "type": "string",
+                "description": "City name"
+            },
+            "days": {
+                "type": "number",
+                "description": "Number of days (1-5)",
+                "minimum": 1,
+                "maximum": 5
+            }
+        },
+        "required": ["city"]
+    }
+)
+```
+
+### Server Structure
+
+```python
+# Create server instance with name
+app = Server("weather-server")
+
+# Register resource handler
+@app.list_resources()
+async def list_resources() -> list[Resource]:
+    """List available resources"""
+    return [...]
+
+# Register tool handler
+@app.call_tool()
+async def call_tool(name: str, arguments: Any) -> Sequence[TextContent]:
+    """Handle tool execution"""
+    return [...]
+
+# Register additional handlers
+@app.read_resource()
+...
+@app.list_tools()
+...
+```
+
+Python type hints help catch errors early and improve code maintainability.
+
+## Best practices
+
+### Error Handling
+
+```python
+try:
+    async with httpx.AsyncClient() as client:
+        response = await client.get(..., params={..., **http_params})
+        response.raise_for_status()
+except httpx.HTTPError as e:
+    raise McpError(
+        ErrorCode.INTERNAL_ERROR,
+        f"API error: {str(e)}"
+    )
+```
+
+### Type Validation
+
+```python
+if not isinstance(args, dict) or "city" not in args:
+    raise McpError(
+        ErrorCode.INVALID_PARAMS,
+        "Invalid forecast arguments"
+    )
+```
+
+### Environment Variables
+
+```python
+if not API_KEY:
+    raise ValueError("OPENWEATHER_API_KEY is required")
+```
+
+## Available transports
+
+While this guide uses stdio transport, MCP supports additional transport options:
+
+### SSE (Server-Sent Events)
+
+````python
+from mcp.server.sse import SseServerTransport
+from starlette.applications import Starlette
+from starlette.routing import Route
+
+# Create SSE transport with endpoint
+sse = SseServerTransport("/messages")
+
+# Handler for SSE connections
+async def handle_sse(scope, receive, send):
+    async with sse.connect_sse(scope, receive, send) as streams:
+        await app.run(
+            streams[0], streams[1], app.create_initialization_options()
+        )
+
+# Handler for client messages
+async def handle_messages(scope, receive, send):
+    await sse.handle_post_message(scope, receive, send)
+
+# Create Starlette app with routes
+app = Starlette(
+    debug=True,
+    routes=[
+        Route("/sse", endpoint=handle_sse),
+        Route("/messages", endpoint=handle_messages, methods=["POST"]),
+    ],
+)
+
+# Run with any ASGI server
+import uvicorn
+uvicorn.run(app, host="0.0.0.0", port=8000)
+​```
+
+## Advanced features
+
+1. Understanding Request Context
+
+The request context provides access to the current request’s metadata and the active client session. Access it through server.request_context:
+
+```python
+@app.call_tool()
+async def call_tool(name: str, arguments: Any) -> Sequence[TextContent]:
+    # Access the current request context
+    ctx = self.request_context
+
+    # Get request metadata like progress tokens
+    if progress_token := ctx.meta.progressToken:
+        # Send progress notifications via the session
+        await ctx.session.send_progress_notification(
+            progress_token=progress_token,
+            progress=0.5,
+            total=1.0
+        )
+
+    # Sample from the LLM client
+    result = await ctx.session.create_message(
+        messages=[
+            SamplingMessage(
+                role="user",
+                content=TextContent(
+                    type="text",
+                    text="Analyze this weather data: " + json.dumps(arguments)
+                )
+            )
+        ],
+        max_tokens=100
+    )
+
+    return [TextContent(type="text", text=result.content.text)]
+````
+
+2. Add caching
+
+```python
+# Cache settings
+cache_timeout = timedelta(minutes=15)
+last_cache_time = None
+cached_weather = None
+
+async def fetch_weather(city: str) -> dict[str, Any]:
+    global cached_weather, last_cache_time
+
+    now = datetime.now()
+    if (cached_weather is None or
+        last_cache_time is None or
+        now - last_cache_time > cache_timeout):
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{API_BASE_URL}/{CURRENT_WEATHER_ENDPOINT}",
+                params={"q": city, **http_params}
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        cached_weather = {
+            "temperature": data["main"]["temp"],
+            "conditions": data["weather"][0]["description"],
+            "humidity": data["main"]["humidity"],
+            "wind_speed": data["wind"]["speed"],
+            "timestamp": datetime.now().isoformat()
+        }
+        last_cache_time = now
+
+    return cached_weather
+```
+
+3. Add progress notifications
+
+```python
+@self.call_tool()
+async def call_tool(self, name: str, arguments: Any) -> CallToolResult:
+    if progress_token := self.request_context.meta.progressToken:
+        # Send progress notifications
+        await self.request_context.session.send_progress_notification(
+            progress_token=progress_token,
+            progress=1,
+            total=2
+        )
+
+        # Fetch data...
+
+        await self.request_context.session.send_progress_notification(
+            progress_token=progress_token,
+            progress=2,
+            total=2
+        )
+
+    # Rest of the method implementation...
+```
+
+4. Add logging support
+
+```python
+# Set up logging
+logger = logging.getLogger("weather-server")
+logger.setLevel(logging.INFO)
+
+@app.set_logging_level()
+async def set_logging_level(level: LoggingLevel) -> EmptyResult:
+    logger.setLevel(level.upper())
+    await app.request_context.session.send_log_message(
+        level="info",
+        data=f"Log level set to {level}",
+        logger="weather-server"
+    )
+    return EmptyResult()
+
+# Use logger throughout the code
+# For example:
+# logger.info("Weather data fetched successfully")
+# logger.error(f"Error fetching weather data: {str(e)}")
+```
+
+5. Add resource templates
+
+```python
+@app.list_resource_templates()
+async def list_resource_templates() -> list[ResourceTemplate]:
+    return [
+        ResourceTemplate(
+            uriTemplate="weather://{city}/current",
+            name="Current weather for any city",
+            mimeType="application/json"
+        )
+    ]
+```
+
+## Testing
+
+1. Create test file
+
+Create `tests/weather_test.py`:
+
+```python
+import pytest
+import os
+from unittest.mock import patch, Mock
+from datetime import datetime
+import json
+from pydantic import AnyUrl
+os.environ["OPENWEATHER_API_KEY"] = "TEST"
+
+from weather_service.server import (
+    fetch_weather,
+    read_resource,
+    call_tool,
+    list_resources,
+    list_tools,
+    DEFAULT_CITY
+)
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+@pytest.fixture
+def mock_weather_response():
+    return {
+        "main": {
+            "temp": 20.5,
+            "humidity": 65
+        },
+        "weather": [
+            {"description": "scattered clouds"}
+        ],
+        "wind": {
+            "speed": 3.6
+        }
+    }
+
+@pytest.fixture
+def mock_forecast_response():
+    return {
+        "list": [
+            {
+                "dt_txt": "2024-01-01 12:00:00",
+                "main": {"temp": 18.5},
+                "weather": [{"description": "sunny"}]
+            },
+            {
+                "dt_txt": "2024-01-02 12:00:00",
+                "main": {"temp": 17.2},
+                "weather": [{"description": "cloudy"}]
+            }
+        ]
+    }
+
+@pytest.mark.anyio
+async def test_fetch_weather(mock_weather_response):
+    with patch('requests.Session.get') as mock_get:
+        mock_get.return_value.json.return_value = mock_weather_response
+        mock_get.return_value.raise_for_status = Mock()
+
+        weather = await fetch_weather("London")
+
+        assert weather["temperature"] == 20.5
+        assert weather["conditions"] == "scattered clouds"
+        assert weather["humidity"] == 65
+        assert weather["wind_speed"] == 3.6
+        assert "timestamp" in weather
+
+@pytest.mark.anyio
+async def test_read_resource():
+    with patch('weather_service.server.fetch_weather') as mock_fetch:
+        mock_fetch.return_value = {
+            "temperature": 20.5,
+            "conditions": "clear sky",
+            "timestamp": datetime.now().isoformat()
+        }
+
+        uri = AnyUrl("weather://London/current")
+        result = await read_resource(uri)
+
+        assert isinstance(result, str)
+        assert "temperature" in result
+        assert "clear sky" in result
+
+@pytest.mark.anyio
+async def test_call_tool(mock_forecast_response):
+    class Response():
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return mock_forecast_response
+
+    class AsyncClient():
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            pass
+
+        async def get(self, *args, **kwargs):
+            return Response()
+
+    with patch('httpx.AsyncClient', new=AsyncClient) as mock_client:
+        result = await call_tool("get_forecast", {"city": "London", "days": 2})
+
+        assert len(result) == 1
+        assert result[0].type == "text"
+        forecast_data = json.loads(result[0].text)
+        assert len(forecast_data) == 1
+        assert forecast_data[0]["temperature"] == 18.5
+        assert forecast_data[0]["conditions"] == "sunny"
+
+@pytest.mark.anyio
+async def test_list_resources():
+    resources = await list_resources()
+    assert len(resources) == 1
+    assert resources[0].name == f"Current weather in {DEFAULT_CITY}"
+    assert resources[0].mimeType == "application/json"
+
+@pytest.mark.anyio
+async def test_list_tools():
+    tools = await list_tools()
+    assert len(tools) == 1
+    assert tools[0].name == "get_forecast"
+    assert "city" in tools[0].inputSchema["properties"]
+```
+
+2. Run tests
+
+```bash
+uv add --dev pytest
+uv run pytest
+```
+
+### Troubleshooting
+
+#### Installation issues
+
+```python
+# Check Python version
+python --version
+
+# Reinstall dependencies
+uv sync --reinstall
+```
+
+#### Type checking
+
+```python
+# Install mypy
+uv add --dev pyright
+
+# Run type checker
+uv run pyright src
+```
+
 # Concepts
 
 ## Core architecture
@@ -861,6 +1629,8 @@ MCP follows a client-server architecture where:
 
 The protocol layer handles message framing, request/response linking, and high-level communication patterns.
 
+**TypeScript:**
+
 ```typescript
 class Protocol<Request, Notification, Result> {
   // Handle incoming requests
@@ -881,6 +1651,42 @@ class Protocol<Request, Notification, Result> {
   // Send one-way notifications
   notification(notification: Notification): Promise<void>;
 }
+```
+
+**Python:**
+
+```python
+class Session(BaseSession[RequestT, NotificationT, ResultT]):
+    async def send_request(
+        self,
+        request: RequestT,
+        result_type: type[Result]
+    ) -> Result:
+        """
+        Send request and wait for response. Raises McpError if response contains error.
+        """
+        # Request handling implementation
+
+    async def send_notification(
+        self,
+        notification: NotificationT
+    ) -> None:
+        """Send one-way notification that doesn't expect response."""
+        # Notification handling implementation
+
+    async def _received_request(
+        self,
+        responder: RequestResponder[ReceiveRequestT, ResultT]
+    ) -> None:
+        """Handle incoming request from other side."""
+        # Request handling implementation
+
+    async def _received_notification(
+        self,
+        notification: ReceiveNotificationT
+    ) -> None:
+        """Handle incoming notification from other side."""
+        # Notification handling implementation
 ```
 
 Key classes include:
@@ -996,6 +1802,8 @@ Errors are propagated through:
 
 Here’s a basic example of implementing an MCP server:
 
+**TypeScript:**
+
 ```typescript
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -1027,6 +1835,37 @@ server.setRequestHandler(ListResourcesRequestSchema, async () => {
 // Connect transport
 const transport = new StdioServerTransport();
 await server.connect(transport);
+```
+
+**Python:**
+
+```python
+import asyncio
+import mcp.types as types
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
+
+app = Server("example-server")
+
+@app.list_resources()
+async def list_resources() -> list[types.Resource]:
+    return [
+        types.Resource(
+            uri="example://resource",
+            name="Example Resource"
+        )
+    ]
+
+async def main():
+    async with stdio_server() as streams:
+        await app.run(
+            streams[0],
+            streams[1],
+            app.create_initialization_options()
+        )
+
+if __name__ == "__main__":
+    asyncio.run(main)
 ```
 
 ## Best practices
@@ -1259,6 +2098,8 @@ Clients can subscribe to updates for specific resources:
 
 Here’s a simple example of implementing resource support in an MCP server:
 
+**TypeScript:**
+
 ```typescript
 const server = new Server(
   {
@@ -1304,6 +2145,38 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 
   throw new Error("Resource not found");
 });
+```
+
+**Python:**
+
+```python
+app = Server("example-server")
+
+@app.list_resources()
+async def list_resources() -> list[types.Resource]:
+    return [
+        types.Resource(
+            uri="file:///logs/app.log",
+            name="Application Logs",
+            mimeType="text/plain"
+        )
+    ]
+
+@app.read_resource()
+async def read_resource(uri: AnyUrl) -> str:
+    if str(uri) == "file:///logs/app.log":
+        log_contents = await read_log_file()
+        return log_contents
+
+    raise ValueError("Resource not found")
+
+# Start server
+async with stdio_server() as streams:
+    await app.run(
+        streams[0],
+        streams[1],
+        app.create_initialization_options()
+    )
 ```
 
 ## Best practices
@@ -1531,6 +2404,8 @@ const debugWorkflow = {
 
 Here’s a complete example of implementing prompts in an MCP server:
 
+**TypeScript:**
+
 ```typescript
 import { Server } from "@modelcontextprotocol/sdk/server";
 import {
@@ -1627,6 +2502,90 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
 });
 ```
 
+**Python:**
+
+```python
+from mcp.server import Server
+import mcp.types as types
+
+# Define available prompts
+PROMPTS = {
+    "git-commit": types.Prompt(
+        name="git-commit",
+        description="Generate a Git commit message",
+        arguments=[
+            types.PromptArgument(
+                name="changes",
+                description="Git diff or description of changes",
+                required=True
+            )
+        ],
+    ),
+    "explain-code": types.Prompt(
+        name="explain-code",
+        description="Explain how code works",
+        arguments=[
+            types.PromptArgument(
+                name="code",
+                description="Code to explain",
+                required=True
+            ),
+            types.PromptArgument(
+                name="language",
+                description="Programming language",
+                required=False
+            )
+        ],
+    )
+}
+
+# Initialize server
+app = Server("example-prompts-server")
+
+@app.list_prompts()
+async def list_prompts() -> list[types.Prompt]:
+    return list(PROMPTS.values())
+
+@app.get_prompt()
+async def get_prompt(
+    name: str, arguments: dict[str, str] | None = None
+) -> types.GetPromptResult:
+    if name not in PROMPTS:
+        raise ValueError(f"Prompt not found: {name}")
+
+    if name == "git-commit":
+        changes = arguments.get("changes") if arguments else ""
+        return types.GetPromptResult(
+            messages=[
+                types.PromptMessage(
+                    role="user",
+                    content=types.TextContent(
+                        type="text",
+                        text=f"Generate a concise but descriptive commit message "
+                        f"for these changes:\n\n{changes}"
+                    )
+                )
+            ]
+        )
+
+    if name == "explain-code":
+        code = arguments.get("code") if arguments else ""
+        language = arguments.get("language", "Unknown") if arguments else "Unknown"
+        return types.GetPromptResult(
+            messages=[
+                types.PromptMessage(
+                    role="user",
+                    content=types.TextContent(
+                        type="text",
+                        text=f"Explain how this {language} code works:\n\n{code}"
+                    )
+                )
+            ]
+        )
+
+    raise ValueError("Prompt implementation not found")
+```
+
 ## Best practices
 
 When implementing prompts:
@@ -1713,6 +2672,8 @@ Each tool is defined with the following structure:
 
 Here’s an example of implementing a basic tool in an MCP server:
 
+**TypeScript:**
+
 ```typescript
 const server = new Server(
   {
@@ -1756,6 +2717,41 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
   throw new Error("Tool not found");
 });
+```
+
+**Python:**
+
+```python
+app = Server("example-server")
+
+@app.list_tools()
+async def list_tools() -> list[types.Tool]:
+    return [
+        types.Tool(
+            name="calculate_sum",
+            description="Add two numbers together",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "a": {"type": "number"},
+                    "b": {"type": "number"}
+                },
+                "required": ["a", "b"]
+            }
+        )
+    ]
+
+@app.call_tool()
+async def call_tool(
+    name: str,
+    arguments: dict
+) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+    if name == "calculate_sum":
+        a = arguments["a"]
+        b = arguments["b"]
+        result = a + b
+        return [types.TextContent(type="text", text=str(result))]
+    raise ValueError(f"Tool not found: {name}")
 ```
 
 ## Example tool patterns
@@ -2229,7 +3225,7 @@ Use stdio when:
 - Needing simple process communication
 - Working with shell scripts
 
-TypeScript (Server)
+**TypeScript (Server):**
 
 ```typescript
 const server = new Server(
@@ -2246,7 +3242,7 @@ const transport = new StdioServerTransport();
 await server.connect(transport);
 ```
 
-TypeScript (Client)
+**TypeScript (Client):**
 
 ```typescript
 const client = new Client(
@@ -2266,6 +3262,32 @@ const transport = new StdioClientTransport({
 await client.connect(transport);
 ```
 
+**Python (Server):**
+
+```python
+app = Server("example-server")
+
+async with stdio_server() as streams:
+    await app.run(
+        streams[0],
+        streams[1],
+        app.create_initialization_options()
+    )
+```
+
+**Python (Client):**
+
+```python
+params = StdioServerParameters(
+    command="./server",
+    args=["--option", "value"]
+)
+
+async with stdio_client(params) as streams:
+    async with ClientSession(streams[0], streams[1]) as session:
+        await session.initialize()
+```
+
 ### Server-Sent Events (SSE)
 
 SSE transport enables server-to-client streaming with HTTP POST requests for client-to-server communication.
@@ -2276,7 +3298,7 @@ Use SSE when:
 - Working with restricted networks
 - Implementing simple updates
 
-TypeScript (Server)
+**TypeScript (Server):**
 
 ```typescript
 const server = new Server(
@@ -2293,7 +3315,7 @@ const transport = new SSEServerTransport("/message", response);
 await server.connect(transport);
 ```
 
-TypeScript (Client)
+**TypeScript (Client):**
 
 ```typescript
 const client = new Client(
@@ -2310,6 +3332,39 @@ const transport = new SSEClientTransport(new URL("http://localhost:3000/sse"));
 await client.connect(transport);
 ```
 
+**Python (Server):**
+
+```python
+from mcp.server.sse import SseServerTransport
+from starlette.applications import Starlette
+from starlette.routing import Route
+
+app = Server("example-server")
+sse = SseServerTransport("/messages")
+
+async def handle_sse(scope, receive, send):
+    async with sse.connect_sse(scope, receive, send) as streams:
+        await app.run(streams[0], streams[1], app.create_initialization_options())
+
+async def handle_messages(scope, receive, send):
+    await sse.handle_post_message(scope, receive, send)
+
+starlette_app = Starlette(
+    routes=[
+        Route("/sse", endpoint=handle_sse),
+        Route("/messages", endpoint=handle_messages, methods=["POST"]),
+    ]
+)
+```
+
+**Python (Client):**
+
+```python
+async with sse_client("http://localhost:8000/sse") as streams:
+    async with ClientSession(streams[0], streams[1]) as session:
+        await session.initialize()
+```
+
 ## Custom Transports
 
 MCP makes it easy to implement custom transports for specific needs. Any transport implementation just needs to conform to the Transport interface:
@@ -2320,6 +3375,8 @@ You can implement custom transports for:
 - Specialized communication channels
 - Integration with existing systems
 - Performance optimization
+
+**TypeScript:**
 
 ```typescript
 interface Transport {
@@ -2339,6 +3396,42 @@ interface Transport {
 }
 ```
 
+**Python:**
+
+Note that while MCP Servers are often implemented with asyncio, we recommend implementing low-level interfaces like transports with `anyio` for wider compatibility.
+
+```python
+@contextmanager
+async def create_transport(
+    read_stream: MemoryObjectReceiveStream[JSONRPCMessage | Exception],
+    write_stream: MemoryObjectSendStream[JSONRPCMessage]
+):
+    """
+    Transport interface for MCP.
+
+    Args:
+        read_stream: Stream to read incoming messages from
+        write_stream: Stream to write outgoing messages to
+    """
+    async with anyio.create_task_group() as tg:
+        try:
+            # Start processing messages
+            tg.start_soon(lambda: process_messages(read_stream))
+
+            # Send messages
+            async with write_stream:
+                yield write_stream
+
+        except Exception as exc:
+            # Handle errors
+            raise exc
+        finally:
+            # Clean up
+            tg.cancel_scope.cancel()
+            await write_stream.aclose()
+            await read_stream.aclose()
+```
+
 ## Error Handling
 
 Transport implementations should handle various error scenarios:
@@ -2350,6 +3443,8 @@ Transport implementations should handle various error scenarios:
 5. Resource cleanup
 
 Example error handling:
+
+**TypeScript:**
 
 ```typescript
 class ExampleTransport implements Transport {
@@ -2371,6 +3466,44 @@ class ExampleTransport implements Transport {
     }
   }
 }
+```
+
+**Python:**
+
+Note that while MCP Servers are often implemented with asyncio, we recommend implementing low-level interfaces like transports with `anyio` for wider compatibility.
+
+```python
+@contextmanager
+async def example_transport(scope: Scope, receive: Receive, send: Send):
+    try:
+        # Create streams for bidirectional communication
+        read_stream_writer, read_stream = anyio.create_memory_object_stream(0)
+        write_stream, write_stream_reader = anyio.create_memory_object_stream(0)
+
+        async def message_handler():
+            try:
+                async with read_stream_writer:
+                    # Message handling logic
+                    pass
+            except Exception as exc:
+                logger.error(f"Failed to handle message: {exc}")
+                raise exc
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(message_handler)
+            try:
+                # Yield streams for communication
+                yield read_stream, write_stream
+            except Exception as exc:
+                logger.error(f"Transport error: {exc}")
+                raise exc
+            finally:
+                tg.cancel_scope.cancel()
+                await write_stream.aclose()
+                await read_stream.aclose()
+    except Exception as exc:
+        logger.error(f"Failed to initialize transport: {exc}")
+        raise exc
 ```
 
 ## Best Practices
@@ -2578,11 +3711,22 @@ _Local MCP servers should not log messages to stdout (standard out), as this wil
 
 For all transports, you can also provide logging to the client by sending a log message notification:
 
+**TypeScript:**
+
 ```typescript
 server.sendLoggingMessage({
   level: "info",
   data: "Server started successfully",
 });
+```
+
+**Python:**
+
+```python
+server.request_context.session.send_log_message(
+  level="info",
+  data="Server started successfully",
+)
 ```
 
 Important events to log:
@@ -2710,9 +3854,11 @@ npx @modelcontextprotocol/inspector <command>
 npx @modelcontextprotocol/inspector <command> <arg1> <arg2>
 ```
 
-#### Inspecting servers from NPM
+#### Inspecting servers from NPM or PyPi
 
-A common way to start server packages from NPM.
+A common way to start server packages from NPM or PyPi.
+
+**NPM package:**
 
 ```bash
 npx -y @modelcontextprotocol/inspector npx <package-name> <args>
@@ -2720,12 +3866,33 @@ npx -y @modelcontextprotocol/inspector npx <package-name> <args>
 npx -y @modelcontextprotocol/inspector npx server-postgres postgres://127.0.0.1/testdb
 ```
 
+**PyPi package:**
+
+```bash
+npx @modelcontextprotocol/inspector uvx <package-name> <args>
+# For example
+npx @modelcontextprotocol/inspector uvx mcp-server-git --repository ~/code/mcp/servers.git
+```
+
 #### Inspecting locally developed servers
 
 To inspect servers locally developed or downloaded as a repository, the most common way is:
 
+**TypeScript:**
+
 ```bash
 npx @modelcontextprotocol/inspector node path/to/server/index.js args...
+```
+
+**Python:**
+
+```bash
+npx @modelcontextprotocol/inspector \
+  uv \
+  --directory path/to/server \
+  run \
+  package-name \
+  args...
 ```
 
 Please carefully read any attached README for the most accurate instructions.
@@ -2899,3 +4066,314 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 const transport = new StdioServerTransport();
 await server.connect(transport);
 ```
+
+# MCP Python SDK
+
+Python implementation of the Model Context Protocol (MCP), providing both client and server capabilities for integrating with LLM surfaces.
+
+## Overview
+
+The Model Context Protocol allows applications to provide context for LLMs in a standardized way, separating the concerns of providing context from the actual LLM interaction. This Python SDK implements the full MCP specification, making it easy to:
+
+- Build MCP clients that can connect to any MCP server
+- Create MCP servers that expose resources, prompts and tools
+- Use standard transports like stdio and SSE
+- Handle all MCP protocol messages and lifecycle events
+
+## Installation
+
+We recommend the use of uv to manage your Python projects:
+
+```bash
+uv add mcp
+```
+
+Alternatively, add mcp to your `requirements.txt`:
+
+```bash
+pip install mcp
+# or add to requirements.txt
+pip install -r requirements.txt
+```
+
+## Overview
+
+MCP servers provide focused functionality like resources, tools, prompts, and other capabilities that can be reused across many client applications. These servers are designed to be easy to build, highly composable, and modular.
+
+### Key design principles
+
+Servers are extremely easy to build with clear, simple interfaces
+Multiple servers can be composed seamlessly through a shared protocol
+Each server operates in isolation and cannot access conversation context
+Features can be added progressively through capability negotiation
+
+#### Server provided primitives
+
+Prompts: Templatable text
+Resources: File-like attachments
+Tools: Functions that models can call
+Utilities:
+Completion: Auto-completion provider for prompt arguments or resource URI templates
+Logging: Logging to the client
+Pagination\*: Pagination for long results
+
+#### Client provided primitives
+
+Sampling: Allow servers to sample using client models
+Roots: Information about locations to operate on (e.g., directories)
+
+Connections between clients and servers are established through transports like stdio or SSE (Note that most clients support stdio, but not SSE at the moment). The transport layer handles message framing, delivery, and error handling.
+
+### Quick Start
+
+#### Creating a Server
+
+MCP servers follow a decorator approach to register handlers for MCP primitives like resources, prompts, and tools. The goal is to provide a simple interface for exposing capabilities to LLM clients.
+
+`example_server.py`
+
+```python
+# /// script
+# dependencies = [
+#   "mcp"
+# ]
+# ///
+from mcp.server import Server, NotificationOptions
+from mcp.server.models import InitializationOptions
+import mcp.server.stdio
+import mcp.types as types
+
+# Create a server instance
+server = Server("example-server")
+
+# Add prompt capabilities
+@server.list_prompts()
+async def handle_list_prompts() -> list[types.Prompt]:
+    return [
+        types.Prompt(
+            name="example-prompt",
+            description="An example prompt template",
+            arguments=[
+                types.PromptArgument(
+                    name="arg1",
+                    description="Example argument",
+                    required=True
+                )
+            ]
+        )
+    ]
+
+@server.get_prompt()
+async def handle_get_prompt(
+    name: str,
+    arguments: dict[str, str] | None
+) -> types.GetPromptResult:
+    if name != "example-prompt":
+        raise ValueError(f"Unknown prompt: {name}")
+
+    return types.GetPromptResult(
+        description="Example prompt",
+        messages=[
+            types.PromptMessage(
+                role="user",
+                content=types.TextContent(
+                    type="text",
+                    text="Example prompt text"
+                )
+            )
+        ]
+    )
+
+async def run():
+    # Run the server as STDIO
+    async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
+        await server.run(
+            read_stream,
+            write_stream,
+            InitializationOptions(
+                server_name="example",
+                server_version="0.1.0",
+                capabilities=server.get_capabilities(
+                    notification_options=NotificationOptions(),
+                    experimental_capabilities={},
+                )
+            )
+        )
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(run())
+```
+
+#### Creating a Client
+
+`example_client.py`
+
+```python
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+# Create server parameters for stdio connection
+server_params = StdioServerParameters(
+    command="python", # Executable
+    args=["example_server.py"], # Optional command line arguments
+    env=None # Optional environment variables
+)
+
+async def run():
+    async with stdio_client(server_params) as (read, write):
+        async with ClientSession(read, write) as session:
+            # Initialize the connection
+            await session.initialize()
+
+            # The example server only supports prompt primitives:
+
+            # List available prompts
+            prompts = await session.list_prompts()
+
+            # Get a prompt
+            prompt = await session.get_prompt("example-prompt", arguments={"arg1": "value"})
+
+            """
+            Other example calls include:
+
+            # List available resources
+            resources = await session.list_resources()
+
+            # List available tools
+            tools = await session.list_tools()
+
+            # Read a resource
+            resource = await session.read_resource("file://some/path")
+
+            # Call a tool
+            result = await session.call_tool("tool-name", arguments={"arg1": "value"})
+            """
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(run())
+```
+
+## Primitives
+
+The MCP Python SDK provides decorators that map to the core protocol primitives. Each primitive follows a different interaction pattern based on how it is controlled and used:
+
+- Prompts: User-controlled; Interactive templates invoked by user choice; Slash commands, menu options
+- Resources: Application-controlled; Contextual data managed by the client application; File contents, API responses
+- Tools: Model-controlled; Functions exposed to the LLM to take actions; API calls, data updates
+
+### User-Controlled Primitives
+
+Prompts are designed to be explicitly selected by users for their interactions with LLMs.
+
+Decorators:
+
+- `@server.list_prompts()`: List available prompt templates
+- `@server.get_prompt()`: Get a specific prompt with arguments
+
+### Application-Controlled Primitives
+
+Resources are controlled by the client application, which decides how and when they should be used based on its own logic.
+
+Decorators:
+
+- `@server.list_resources()`: List available resources
+- `@server.read_resource()`: Read a specific resource's content
+- `@server.subscribe_resource()`: Subscribe to resource updates
+
+### Model-Controlled Primitives
+
+Tools are exposed to LLMs to enable automated actions, with user approval.
+
+Decorators:
+
+- `@server.list_tools()`: List available tools
+- `@server.call_tool()`: Execute a tool with arguments
+
+### Server Management
+
+Additional decorators for server functionality:
+
+Decorators:
+
+- `@server.set_logging_level()`: Update server logging level
+
+### Capabilities
+
+MCP servers declare capabilities during initialization. These map to specific decorators:
+
+- `prompts`: `listChanged`; `@list_prompts`, `@get_prompt`; Prompt template management
+- `resources`: `subscribe`, `listChanged`; `@list_resources`, `@read_resource`, `@subscribe_resource`; Resource exposure and updates
+- `tools`: `listChanged`; `@list_tools`, `@call_tool`; Tool discovery and execution
+- `logging`:m`@set_logging_level`; Server logging configuration
+- `completion`: `@complete_argument`; Argument completion suggestions
+
+Capabilities are negotiated during connection initialization. Servers only need to implement the decorators for capabilities they support.
+
+## Client Interaction
+
+The MCP Python SDK enables servers to interact with clients through request context and session management. This allows servers to perform operations like LLM sampling and progress tracking.
+
+### Request Context
+
+The Request Context provides access to the current request and client session. It can be accessed through server.request_context and enables:
+
+- Sampling from the client's LLM
+- Sending progress updates
+- Logging messages
+- Accessing request metadata
+
+Example using request context for LLM sampling:
+
+```python
+@server.call_tool()
+async def handle_call_tool(name: str, arguments: dict) -> list[types.TextContent]:
+    # Access the current request context
+    context = server.request_context
+
+    # Use the session to sample from the client's LLM
+    result = await context.session.create_message(
+        messages=[
+            types.SamplingMessage(
+                role="user",
+                content=types.TextContent(
+                    type="text",
+                    text="Analyze this data: " + json.dumps(arguments)
+                )
+            )
+        ],
+        max_tokens=100
+    )
+
+    return [types.TextContent(type="text", text=result.content.text)]
+```
+
+Using request context for progress updates:
+
+```python
+@server.call_tool()
+async def handle_call_tool(name: str, arguments: dict) -> list[types.TextContent]:
+    context = server.request_context
+
+    if progress_token := context.meta.progressToken:
+        # Send progress notifications
+        await context.session.send_progress_notification(
+            progress_token=progress_token,
+            progress=0.5,
+            total=1.0
+        )
+
+    # Perform operation...
+
+    if progress_token:
+        await context.session.send_progress_notification(
+            progress_token=progress_token,
+            progress=1.0,
+            total=1.0
+        )
+
+    return [types.TextContent(type="text", text="Operation complete")]
+```
+
+The request context is automatically set for each request and provides a safe way to access the current client session and request metadata.
