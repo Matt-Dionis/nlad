@@ -6,6 +6,7 @@ This example demonstrates how to use NLAD to build a conversational interface fo
 
 - `product_overview.md`: Defines TalkShop's core features and requirements
 - `preferred_technologies.md`: Specifies the technology stack and architectural choices
+- `design_specs.md`: Describes UI/UX requirements and visual direction
 - `mcp_details.md`: Provides context about the Model Context Protocol for memory features
 - `available_mcp_servers.md`: Lists available MCP servers that can be utilized
 
@@ -15,3 +16,4 @@ This example demonstrates how to use NLAD to build a conversational interface fo
 2. Use them as templates for your own NLAD projects
 3. Note how technical details and newer technologies are thoroughly documented
 4. Observe how requirements are expressed in natural language
+5. See how design requirements can be specified through natural language and visual references
