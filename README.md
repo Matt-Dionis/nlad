@@ -36,6 +36,7 @@ NLAD transforms this experience by allowing developers to:
 ### Available Now
 
 - Natural language specification of application features
+- Design integration through natural language and visual inspiration
 - Automated technical implementation suggestions
 - Integration guidance for APIs and protocols
 - Code generation with best practices
@@ -43,13 +44,11 @@ NLAD transforms this experience by allowing developers to:
 
 ### Coming Soon
 
-- **Design Integration**
+- **Enhanced Design Capabilities**
 
-  - Color palette specification through natural language
-  - Visual reference processing for design inspiration
-  - Automatic UI component styling
-  - Responsive design automation
-  - Accessibility compliance automation
+  - AI-powered accessibility analysis
+  - Animation and interaction specifications
+  - Advanced responsive behavior patterns
 
 - **Enhanced Abstractions**
   - Database schema design from natural language
@@ -71,7 +70,7 @@ NLAD is best implemented using [Claude Projects](https://claude.ai/projects) or 
 
 ## Required Documentation
 
-NLAD requires two core documents to be provided to the LLM:
+NLAD requires three core documents to be provided to the LLM:
 
 1. **product_overview.md**
 
@@ -81,10 +80,18 @@ NLAD requires two core documents to be provided to the LLM:
    - User interaction flows
 
 2. **preferred_technologies.md**
+
    - Technology stack choices
    - Framework preferences
    - Architecture decisions
    - Development tools
+
+3. **design_specs.md**
+
+   - Visual inspiration references
+   - Brand and style guidelines
+   - Component specifications
+   - Layout requirements
 
 For newer technologies, protocols, or libraries that may not be in the LLM's training data, additional detailed context should be provided. For example:
 
@@ -92,6 +99,54 @@ For newer technologies, protocols, or libraries that may not be in the LLM's tra
 - API documentation
 - Implementation guides
 - Available tools and utilities
+
+### Design Integration
+
+The `design_specs.md` file supports UI/UX specifications through natural language and optional visual inspiration. Developers can provide as much or as little design direction as they prefer, with the LLM filling in unspecified details using best practices and context.
+
+#### Visual Inspiration
+
+Optionally reference up to 3 inspiration images:
+
+1. **Style Reference**: Overall aesthetic and color palette inspiration
+2. **Component Reference**: UI patterns and interactive elements
+3. **Brand Reference**: Existing brand materials or guidelines
+
+#### Design Specification Example
+
+```markdown
+# Design Specifications
+
+## Visual Inspiration
+
+- style_reference.jpg: Modern interface with desired aesthetic
+- components.jpg: Example chat interface patterns
+- brand.jpg: Current brand guidelines
+
+## Brand Personality
+
+- Modern and efficient
+- Trustworthy and professional
+  [Additional traits as needed...]
+
+## Color Direction
+
+- Extract palette from style_reference.jpg
+- High contrast for accessibility
+  [Additional color requirements...]
+
+## Component Design
+
+- Chat Interface: "rounded bubbles with clear user distinction"
+- Navigation: "simple and intuitive"
+  [Additional component specs...]
+
+## Layout Guidelines
+
+- Mobile-first approach
+- Clear visual hierarchy
+  [Additional layout requirements...]
+```
 
 ### Example Documentation
 
@@ -131,6 +186,7 @@ You will be provided with the following project knowledge, which you will levera
 - 'preferred_technologies': The preferred tech stack for the application we will build.
   You will offer options for any necessary technology choices we need to make beyond
   the provided tech stack.
+- 'design_specs': Design requirements and visual inspiration for the application.
 - 'api_documentation': Comprehensive documentation about the external API we'll be integrating with.
 
 You will 'hold the user's hand' and walk them step-by-step through creating, building,
